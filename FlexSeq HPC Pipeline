@@ -1,0 +1,119 @@
+#!/bin/bash
+# ============================================================
+# FlexSeq HPC Pipeline — All Linux/AHPCC Commands
+# Covers: connecting, transferring data, inspecting, and
+#         filtering the VCF -- everything BEFORE the updog/R step.
+# ============================================================
+# NOTE: This is a reference log of commands actually run, not a
+# script meant to be executed top-to-bottom in one go -- some
+# steps (SSH login, file transfer) are interactive and were done
+# via MobaXterm's GUI. CLI equivalents are shown for reference.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# STEP 0 — Connect to AHPCC
+# ------------------------------------------------------------
+# Requires SSH key + 2FA (password auth is disabled on Pinnacle).
+# Done via MobaXterm SSH session in practice.
+
+# ------------------------------------------------------------
+# STEP 1 — Create working directories (run on LOGIN node)
+# ------------------------------------------------------------
+mkdir -p ~/blackberry_flexseq/vcf
+mkdir -p ~/blackberry_flexseq/fastqs
+
+
+# ------------------------------------------------------------
+# STEP 1b — Transfer files from local machine to AHPCC
+# ------------------------------------------------------------
+# Done via MobaXterm's SCP/SFTP browser (drag-and-drop) in practice.
+# CLI equivalent, run from the LOCAL machine (not on AHPCC):
+#
+#   scp "D:\LGC2026\ARK_133905\VCFs\MAF0.2_DP10_Corrected_ARK_133905_SNPs.vcf" \
+#       rhysb@hpc-portal2.hpc.uark.edu:~/blackberry_flexseq/vcf/
+#
+#   scp -r "D:\LGC2026\ARK_133905\Fastqs" \
+#       rhysb@hpc-portal2.hpc.uark.edu:~/blackberry_flexseq/fastqs/
+
+
+# ------------------------------------------------------------
+# STEP 2 — Start an interactive compute session
+# ------------------------------------------------------------
+# --export=NONE is required on this cluster: login nodes run
+# Rocky9, compute nodes run CentOS7, and this flag avoids
+# environment conflicts between the two.
+srun -N1 -n1 -c4 -p cloud72 -q cloud -t 72:00:00 --export=NONE --pty /bin/bash
+
+# Confirm you're actually on a compute node, not the login node
+hostname
+
+
+# ------------------------------------------------------------
+# STEP 3 — Inspect the VCF
+# ------------------------------------------------------------
+cd ~/blackberry_flexseq/vcf
+
+# Total SNP count (skip header lines starting with #)
+grep -vc '^#' MAF0.2_DP10_Corrected_ARK_133905_SNPs.vcf
+
+# Sample count (VCF sample columns start at position 10)
+grep -m1 '^#CHROM' MAF0.2_DP10_Corrected_ARK_133905_SNPs.vcf | awk '{print NF-9}'
+
+# Unique chromosome/scaffold list
+grep -v '^#' MAF0.2_DP10_Corrected_ARK_133905_SNPs.vcf | cut -f1 | sort -u
+
+# Preview first 5 data rows (confirms AD field is present in FORMAT column)
+grep -v '^#' MAF0.2_DP10_Corrected_ARK_133905_SNPs.vcf | head -5
+
+
+# ------------------------------------------------------------
+# STEP 4 — Filter the VCF with VCFtools
+# ------------------------------------------------------------
+module load vcftools
+
+vcftools --vcf MAF0.2_DP10_Corrected_ARK_133905_SNPs.vcf \
+  --min-alleles 2 \
+  --max-alleles 2 \
+  --max-missing 0.2 \
+  --recode \
+  --recode-INFO-all \
+  --out ARK_133905_biallelic_filtered
+
+# Confirm the output SNP count matches what VCFtools reported
+grep -vc '^#' ARK_133905_biallelic_filtered.recode.vcf
+
+
+# ------------------------------------------------------------
+# STEP 5 — Extract allele depth (AD) for updog
+# ------------------------------------------------------------
+vcftools --vcf ARK_133905_biallelic_filtered.recode.vcf \
+  --extract-FORMAT-info AD \
+  --out ARK_133905
+
+# Quick check of the output
+head -2 ARK_133905.AD.FORMAT | cut -f1-5
+
+
+# ------------------------------------------------------------
+# STEP 6 — Extract REF/ALT alleles (needed later to rebuild
+#          full marker names, e.g. Ra01:21248_A/G)
+# ------------------------------------------------------------
+grep -v '^#' ARK_133905_biallelic_filtered.recode.vcf | \
+  awk -F'\t' '{print $1"\t"$2"\t"$4"\t"$5}' > ARK_133905_ref_alt.txt
+
+# Confirm the output
+ls -la ARK_133905_ref_alt.txt
+head -3 ARK_133905_ref_alt.txt
+
+
+# ------------------------------------------------------------
+# Everything above this line = complete before moving to R/updog.
+# Files now sitting in ~/blackberry_flexseq/vcf/, ready for the
+# tetraploid dosage recall step (separate R script, run via
+# AHPCC OnDemand RStudio + sbatch batch job):
+#   - ARK_133905.AD.FORMAT
+#   - ARK_133905_ref_alt.txt
+# ------------------------------------------------------------
+
+#Now move to R on HPC interactive session - see FlexSeq_Dogify.R in Github on this repository
